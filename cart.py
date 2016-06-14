@@ -19,16 +19,47 @@ def mat2d(size):
             field.append((float(x), float(y)))
     return numpy.reshape(field, (size, size, 2))
 
-def mat2cov(field):
+def idx_iter(i_from, i_to, size):
+    i = i_from
+    while i % size != i_to % size:
+        yield i % size
+        i += 1
+
+def field(row_from, row_to, col_from, col_to, size):
+    row_from %= size
+    row_to %= size
+    col_from %= size
+    col_to %= size
+    field = numpy.zeros(((row_to - row_from) % size, 
+                         (col_to - col_from) % size, 2))
+    for j, y in enumerate(idx_iter(col_from, col_to, size)):
+        for i, x in enumerate(idx_iter(row_from, row_to, size)):
+            field[i][j] = ((float(x), float(y)))
+    return field
+
+def cartesian_dist(src, tgt):
+    src_x, src_y = src
+    tgt_x, tgt_y = tgt
+    dist = math.sqrt((src_x - tgt_x) ** 2 + (src_y - tgt_y) ** 2)
+    return math.exp(-dist)
+
+def toroidal_dist(lenfield):
+    def toroidal_inner(src, tgt):
+        src_x, src_y = src
+        tgt_x, tgt_y = tgt
+        dist = ((src_x - tgt_x) % (lenfield / 1)) ** 2
+        dist += ((src_y - tgt_y) % (lenfield / 1)) ** 2
+        return math.exp(-math.sqrt(dist))
+    return toroidal_inner
+
+def mat2cov(field, dist_metric):
     covsz = field.shape[0] ** 2
     cov = numpy.zeros((covsz, covsz))
     for i in range(covsz):
-        src_x, src_y = field[i / field.shape[0]][i % field.shape[0]]
+        src = field[i / field.shape[0]][i % field.shape[0]]
         for j in range(covsz):
-            tgt_x, tgt_y = field[j / field.shape[0]][j % field.shape[0]]
-            dist = math.sqrt((src_x - tgt_x) ** 2 +
-                             (src_y - tgt_y) ** 2)
-            cov[i][j] = math.exp(-dist)
+            tgt = field[j / field.shape[0]][j % field.shape[0]]
+            cov[i][j] = dist_metric(src, tgt)
     return cov
 
 def cov2row(cov, x, y):
@@ -36,54 +67,48 @@ def cov2row(cov, x, y):
     row = x + SZ * y
     return cov[row].reshape((SZ, SZ))
 
-def get_margins(field, size, margin, s_i):
+def get_margins(size, margin, s_i):
     margin_sinister = margin
     margin_dexter = margin
     idx_from = s_i * size
     idx_to = (s_i + 1) * size
-    if idx_from - margin_sinister < 0:
-        adj = (idx_from - margin_sinister)
-        margin_dexter -= adj
-        margin_sinister += adj
-    if idx_to + margin_dexter > len(field):
-        adj = idx_to + margin_dexter - len(field)
-        margin_sinister += adj
-        margin_dexter -= adj
     idx_from -= margin_sinister
     idx_to += margin_dexter
     return (idx_from, idx_to, margin_sinister, margin_dexter)
 
-def write_to_invcov(field, size, margin, n_superblocks, out_invcov, offsets):
+def write_to_invcov(lenfield, size, margin, n_superblocks, out_invcov, offsets):
     i_offset, j_offset = offsets
-    for s_i in range(n_superblocks - i_offset):
-        rlmargins = get_margins(field, size, margin, s_i)
+    for s_i in range(n_superblocks):
+        rlmargins = get_margins(size, margin, s_i)
         row_from, row_to, margin_left, margin_right = rlmargins
         if i_offset:
             row_from += size / 2
             row_to += size / 2
-        for s_j in range(n_superblocks - j_offset):
-            tbmargins = get_margins(field, size, margin, s_j)
+        for s_j in range(n_superblocks):
+            tbmargins = get_margins(size, margin, s_j)
             col_from, col_to, margin_top, margin_bot = tbmargins
             if j_offset:
                 col_from += size / 2
                 col_to += size / 2
-            sub_mat = field[row_from:row_to,col_from:col_to]
-            cov = mat2cov(sub_mat)
+            sub_mat = field(row_from, row_to, col_from, col_to, lenfield)
+            cov = mat2cov(sub_mat, toroidal_dist(lenfield))
             invcov = linalg.inv(cov)
             for r_i in range(size):
                 for r_j in range(size):
                     invcov_row = (margin_top + r_i) * (size + margin * 2)
                     invcov_row += margin_left + r_j
-                    r_orig = ((size / 2) * i_offset + s_i * size + r_i, (size / 2) * j_offset + s_j * size + r_j)
-                    out_row = r_orig[0] * len(field) + r_orig[1]
+                    r_orig = (((size / 2) * i_offset + s_i * size + r_i) % lenfield,
+                              ((size / 2) * j_offset + s_j * size + r_j) % lenfield)
+                    out_row = r_orig[0] * lenfield + r_orig[1]
                     for c_i in range(size):
                         for c_j in range(size):
                             invcov_col = (margin_top + c_i) * (size + margin * 2)
                             invcov_col += margin_left + c_j
                             val = invcov[invcov_row][invcov_col]
-                            c_orig = ((size / 2) * i_offset + s_i * size + c_i, (size / 2) * j_offset + s_j * size + c_j)
-                            out_col = c_orig[0] * len(field) + c_orig[1]
-                            out_invcov[out_row][out_col] = 4 * j_offset + 2 * i_offset
+                            c_orig = (((size / 2) * i_offset + s_i * size + c_i) % lenfield, 
+                                      ((size / 2) * j_offset + s_j * size + c_j) % lenfield)
+                            out_col = c_orig[0] * lenfield + c_orig[1]
+                            out_invcov[out_row][out_col] = val
 
 def quick_inv(field, size, margin):
     out_invcov = numpy.zeros((len(field) ** 2,) * 2)
@@ -92,15 +117,15 @@ def quick_inv(field, size, margin):
     for i_offset in range(2):
         for j_offset in range(2):
             offsets = (i_offset, j_offset)
-            write_to_invcov(field, size, margin, n_superblocks, out_invcov,
+            write_to_invcov(len(field), size, margin, n_superblocks, out_invcov,
                             offsets)
     return out_invcov
 
 def main():
     SZ = 32
-    cov = mat2cov(mat2d(SZ))
     field = mat2d(SZ)
-    cov = mat2cov(field)
+    cov = mat2cov(field, toroidal_dist(SZ))
+    scipy.misc.imsave('cov.png', cov)
     invcov = quick_inv(field, 8, 0)
     slow_invcov = numpy.linalg.inv(cov)
     scipy.misc.imsave('invcov.png', invcov)
