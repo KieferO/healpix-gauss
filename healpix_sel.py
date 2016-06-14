@@ -76,7 +76,7 @@ def cast_kernel(order, nest=False):
         dist = 1.0 - np.dot(pix2vec(nside, pt1, nest=nest),
                             pix2vec(nside, pt2, nest=nest))
         dist *= math.pi
-        return math.exp(-dist * 10)
+        return math.exp(-dist * 30)
     return kernel
 
 def circle(ipix, neighborsof, radius):
@@ -95,27 +95,33 @@ def circle(ipix, neighborsof, radius):
 def pts2cov(points, kernel):
     cov = np.zeros((len(points),) * 2)
     for i, pt1 in enumerate(points):
-        for j, pt2 in enumerate(points):
+        for j, pt2 in enumerate(points[i:]):
             variance = kernel(pt1, pt2)
-            cov[i][j] = variance
+            cov[i][i + j] = variance
+            cov[j + i][i] = variance
+        cov[i][i] = kernel(pt1, pt1)
     return cov
 
 def pts2invcov(points, kernel, neighborsof):
+    random.shuffle(points)
     points = set(points)
     global_invcov = dict()
     while points:
         center = points.pop()
-        region = circle(center, neighborsof, 16)
-        points -= region
+        region = circle(center, neighborsof, 12)
+        hotspot = circle(center, neighborsof, 10)
+        points -= hotspot
         region = list(region)
         cov = pts2cov(region, kernel)
         local_invcov = np.linalg.inv(cov)
         for i, pt1 in enumerate(region):
-            for j, pt2 in enumerate(region):
-                global_invcov[frozenset((pt1, pt2))] = local_invcov[i][j]
+            for j, pt2 in enumerate(region[i:]):
+                if set((pt1, pt2)) <= hotspot:
+                    global_invcov[frozenset((pt1, pt2))] = local_invcov[i][j + i]
     return global_invcov
 
-def dict2mat(invcov, size):
+def dict2mat(invcov, order):
+    size = nside2npix(order2nside(order))
     mat = np.zeros((size, size))
     for ent in invcov.keys():
         if len(ent) > 1:
@@ -127,11 +133,13 @@ def dict2mat(invcov, size):
     return mat
 
 def main():
-    order = 3
-    invcov = dict2mat(pts2invcov(
+    order = 4
+    d = pts2invcov(
         pointsof(order),
         cast_kernel(order, nest=True),
-        cast_neighborsof(order, nest=True)), 768)
+        cast_neighborsof(order, nest=True))
+    return -1
+    invcov = dict2mat(d, order)
     cov = pts2cov(pointsof(order), cast_kernel(order, nest=True))
     check_mat = np.dot(cov, invcov)
     scipy.misc.imsave('cov.png', cov)
