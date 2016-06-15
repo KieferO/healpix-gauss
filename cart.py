@@ -30,7 +30,7 @@ def field(row_from, row_to, col_from, col_to, size):
     row_to %= size
     col_from %= size
     col_to %= size
-    field = numpy.zeros(((row_to - row_from) % size, 
+    field = numpy.zeros(((row_to - row_from) % size,
                          (col_to - col_from) % size, 2))
     for j, y in enumerate(idx_iter(col_from, col_to, size)):
         for i, x in enumerate(idx_iter(row_from, row_to, size)):
@@ -47,8 +47,10 @@ def toroidal_dist(lenfield):
     def toroidal_inner(src, tgt):
         src_x, src_y = src
         tgt_x, tgt_y = tgt
-        dist = ((src_x - tgt_x) % (lenfield / 1)) ** 2
-        dist += ((src_y - tgt_y) % (lenfield / 1)) ** 2
+        dist = min((src_x - tgt_x) % lenfield, (tgt_x - src_x) % lenfield) ** 2.
+        dist += min((src_y - tgt_y) % lenfield, (tgt_y - src_y) % lenfield) ** 2.
+        # dist = ((src_x - tgt_x) % (lenfield / 1)) ** 2
+        # dist += ((src_y - tgt_y) % (lenfield / 1)) ** 2
         return math.exp(-math.sqrt(dist))
     return toroidal_inner
 
@@ -105,7 +107,7 @@ def write_to_invcov(lenfield, size, margin, n_superblocks, out_invcov, offsets):
                             invcov_col = (margin_top + c_i) * (size + margin * 2)
                             invcov_col += margin_left + c_j
                             val = invcov[invcov_row][invcov_col]
-                            c_orig = (((size / 2) * i_offset + s_i * size + c_i) % lenfield, 
+                            c_orig = (((size / 2) * i_offset + s_i * size + c_i) % lenfield,
                                       ((size / 2) * j_offset + s_j * size + c_j) % lenfield)
                             out_col = c_orig[0] * lenfield + c_orig[1]
                             out_invcov[out_row][out_col] = val
