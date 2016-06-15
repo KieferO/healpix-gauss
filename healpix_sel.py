@@ -5,6 +5,8 @@ from __future__ import print_function
 import sys
 import math
 import random
+import cPickle as pickle
+import time
 
 from healpy.pixelfunc import *
 import healpy
@@ -103,13 +105,12 @@ def pts2cov(points, kernel):
     return cov
 
 def pts2invcov(points, kernel, neighborsof):
-    random.shuffle(points)
     points = set(points)
     global_invcov = dict()
     while points:
         center = points.pop()
-        region = circle(center, neighborsof, 12)
-        hotspot = circle(center, neighborsof, 10)
+        region = circle(center, neighborsof, 10)
+        hotspot = circle(center, neighborsof, 8)
         points -= hotspot
         region = list(region)
         cov = pts2cov(region, kernel)
@@ -134,10 +135,16 @@ def dict2mat(invcov, order):
 
 def main():
     order = 4
+    starttime = time.time()
     d = pts2invcov(
         pointsof(order),
         cast_kernel(order, nest=True),
         cast_neighborsof(order, nest=True))
+    tottime = time.time() - starttime
+    savefile = open('order%ddict.pickle' % order, 'wb')
+    print(tottime)
+    pickle.dump(d, savefile, -1)
+    print(len(d))
     return -1
     invcov = dict2mat(d, order)
     cov = pts2cov(pointsof(order), cast_kernel(order, nest=True))
