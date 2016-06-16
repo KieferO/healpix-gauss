@@ -75,7 +75,6 @@ def pointsof(order):
 def cast_kernel(order, nest=False):
     nside = order2nside(order)
     def kernel(pt1, pt2):
-        assert nest
         dist = 1.0 - numpy.dot(pix2vec(nside, pt1, nest=nest),
                             pix2vec(nside, pt2, nest=nest))
         dist *= math.pi
@@ -117,18 +116,19 @@ def pts2invcov(points, kernel, neighborsof):
     global_invcov = scipy.sparse.dok_matrix((size, size), numpy.float64)
     #global_invcov = dict()
     while points:
-        center = points.pop()
-        region = circle(center, neighborsof, 10)
+        center = random.sample(points, 1)[0]
+        region = circle(center, neighborsof, 15)
         hotspot = circle(center, neighborsof, 8)
+        print(len(region), len(hotspot))
         points -= hotspot
         region = list(region)
         cov = pts2cov(region, kernel, sparse=False)
         local_invcov = numpy.linalg.inv(cov)
         for i, pt1 in enumerate(region):
             for j, pt2 in enumerate(region[i:]):
-                if set((pt1, pt2)) <= hotspot:
+                if set((pt1, pt2)) & hotspot:
                     val = local_invcov[i][j + i]
-                    if math.log10(abs(val)) > -6:
+                    if val and math.log10(abs(val)) > -6:
                         #global_invcov[frozenset((pt1, pt2))] =
                         global_invcov[pt1, pt2] = val
                         global_invcov[pt2, pt1] = val
@@ -157,35 +157,39 @@ def ss_matmul(csr, csc, size):
         print(i)
     return outmat
 
+def row2fig(filename, row, nest=False):
+    fig = plt.figure()
+    ax = fig.add_subplot(1,1,1)
+    img_x = healpy.visufunc.mollview(
+        row,
+        nest=nest,
+        return_projected_map=True)
+    ax.imshow(img_x)
+    ax.axis('off')
+    fig.savefig(filename)
+
 def main():
-    order = 3
+    order = 4
     pts = pointsof(order)
-    kern = cast_kernel(order, nest=True)
-    neighbor_func = cast_neighborsof(order, nest=True)
+    NEST = False
+    kern = cast_kernel(order, nest=NEST)
+    neighbor_func = cast_neighborsof(order, nest=NEST)
     invcov = pts2invcov(pts, kern, neighbor_func)
-    #for v in di.values():
-    #    print(v)
-    print('invcov_done')
-    cov = pts2cov(pts, kern)
-    print('cov_done')
-    check = ss_matmul(invcov, cov, len(pts))
-    scipy.misc.imsave('check.png', check)
+    invcov = numpy.array(invcov.todense())
+    cov = pts2cov(pts, kern, sparse=False)
+    check_mat = numpy.dot(invcov, cov)
+    scipy.misc.imsave('invcov.png', invcov)
+    scipy.misc.imsave('cov.png', cov)
+    scipy.misc.imsave('check.png', check_mat)
+    row2fig('covrow.png', cov[37], nest=NEST)
+    row2fig('invcovrow.png', invcov[37], nest=NEST)
 
 def run_checks():
     scipy.misc.imsave('cov.png', cov)
     scipy.misc.imsave('check.png', check_mat)
     scipy.misc.imsave('slow_invcov.png', numpy.linalg.inv(cov))
     scipy.misc.imsave('invcov.png', invcov)
-    fig = plt.figure()
-    ax = fig.add_subplot(1,1,1)
-    img_x = healpy.visufunc.mollview(
-        invcov[113],
-        nest=True,
-        return_projected_map=True)
-    ax.imshow(img_x)
-    ax.axis('off')
-    fig.savefig('randrow.png')
-    return 0
+
 
 if __name__ == '__main__':
     sys.exit(main())
