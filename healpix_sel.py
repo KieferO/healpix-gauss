@@ -17,6 +17,8 @@ import scipy
 import scipy.misc
 import scipy.sparse
 
+import cProfile as profile
+
 def pix_circle(nside, ipix, radius, nest=False):
     assert False
     unvisited = set([ipix])
@@ -184,6 +186,17 @@ def main():
     row2fig('covrow.png', cov[37], nest=NEST)
     row2fig('invcovrow.png', invcov[37], nest=NEST)
 
+def profilerun():
+    order = 3
+    pts = pointsof(order)
+    NEST = False
+    kern = cast_kernel(order, nest=NEST)
+    neighbor_func = cast_neighborsof(order, nest=NEST)
+    return pts2invcov(pts, kern, neighbor_func)
+
+def prof():
+    profile.run('profilerun()')
+
 def run_checks():
     scipy.misc.imsave('cov.png', cov)
     scipy.misc.imsave('check.png', check_mat)
@@ -192,4 +205,4 @@ def run_checks():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(prof())
