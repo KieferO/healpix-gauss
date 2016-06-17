@@ -8,10 +8,13 @@ import random
 import cPickle as pickle
 import time
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from healpy.pixelfunc import *
 import healpy
 import numpy
-import matplotlib.pyplot as plt
 
 import scipy
 import scipy.misc
@@ -78,7 +81,7 @@ def cast_kernel(order, nest=False):
         dist = 1.0 - numpy.dot(pix2vec(nside, pt1, nest=nest),
                             pix2vec(nside, pt2, nest=nest))
         dist *= math.pi
-        return math.exp(-dist * 30)
+        return math.exp(- (50 * dist) ** 2)
     return kernel
 
 def circle(ipix, neighborsof, radius):
@@ -94,6 +97,28 @@ def circle(ipix, neighborsof, radius):
         unvisited |= visited
     return visited
 
+def scale_radius_trial(points, kernel, neighborsof, tol):
+    i = 0
+    center = random.sample(points, 1)[0]
+    far = center
+    while True:
+        i += 1
+        m_val = 100
+        m_nei = None
+        for n in neighborsof(far):
+            val = kernel(center, n)
+            if val < m_val:
+                m_val = val
+                m_nei = n
+        if m_val < tol:
+            return i
+        far = m_nei
+
+def find_scale_radius(*args):
+    trials = 10
+    return int(sum([ scale_radius_trial(*args) for _ in range(trials) ]) /
+               float(trials))
+
 def pts2cov(points, kernel, sparse=True):
     if sparse:
         cov = scipy.sparse.dok_matrix((len(points),) * 2, numpy.float64)
@@ -102,7 +127,7 @@ def pts2cov(points, kernel, sparse=True):
     for i, pt1 in enumerate(points):
         for j, pt2 in enumerate(points[i:]):
             variance = kernel(pt1, pt2)
-            if math.log10(abs(variance)) > -6:
+            if abs(variance) > 1e-6:
                 cov[i, i + j] = variance
                 cov[j + i, i] = variance
         cov[i, i] = kernel(pt1, pt1)
@@ -115,25 +140,38 @@ def pts2invcov(points, kernel, neighborsof):
     size = len(points)
     global_invcov = scipy.sparse.dok_matrix((size, size), numpy.float64)
     #global_invcov = dict()
+    hotspot_r = 16
+    margin_r = find_scale_radius(points, kernel, neighborsof, 1e-6)
+    gutter_r = find_scale_radius(points, kernel, neighborsof, 1e-12)
     while points:
-        center = random.sample(points, 1)[0]
-        region = circle(center, neighborsof, 15)
-        hotspot = circle(center, neighborsof, 8)
-        print(len(region), len(hotspot))
+        center = 138 #random.sample(points, 1)[0]
+        region = circle(center, neighborsof, hotspot_r + gutter_r)
+        margin = circle(center, neighborsof, hotspot_r + margin_r)
+        hotspot = circle(center, neighborsof, hotspot_r)
+        useful_points = len(points & hotspot)
+        if hotspot_r > 2 and useful_points * 2 < len(hotspot):
+            hotspot_r -= 1
+        print(len(region), hotspot_r, useful_points, len(points))
         points -= hotspot
         region = list(region)
+        region.sort()
         cov = pts2cov(region, kernel, sparse=False)
         local_invcov = numpy.linalg.inv(cov)
+        scipy.misc.imsave('local_invcov.png', local_invcov)
+        scipy.misc.imsave('local_cov.png', cov)
+        scipy.misc.imsave('local_check.png', numpy.dot(local_invcov, cov))
         for i, pt1 in enumerate(region):
             for j, pt2 in enumerate(region[i:]):
-                if set((pt1, pt2)) & hotspot:
+                if set((pt1, pt2)) < margin and set((pt1, pt2)) & hotspot:
                     val = local_invcov[i][j + i]
-                    if val and math.log10(abs(val)) > -6:
+                    #if val and math.log10(abs(val)) > -6:
+                    if True:
                         #global_invcov[frozenset((pt1, pt2))] =
-                        global_invcov[pt1, pt2] = val
-                        global_invcov[pt2, pt1] = val
-    global_invcov = global_invcov.tocsr()
-    return global_invcov
+                        if not global_invcov[pt1, pt2]:
+                            global_invcov[pt1, pt2] = val
+                            global_invcov[pt2, pt1] = val
+        global_invcov = global_invcov.tocsr()
+        return global_invcov
 
 def dict2mat(invcov, order):
     size = nside2npix(order2nside(order))
@@ -176,13 +214,22 @@ def main():
     neighbor_func = cast_neighborsof(order, nest=NEST)
     invcov = pts2invcov(pts, kern, neighbor_func)
     invcov = numpy.array(invcov.todense())
+    pix_row = vec2pix(order2nside(order),
+                      0.22203510307746671,
+                      -0.33229901477976281,
+                      0.91666666666666663)
+    row2fig('invcovrow.png', invcov[pix_row], nest=NEST)
+    #scipy.misc.imsave('invcov.png', invcov)
+    with open('invcovrow.txt', 'w') as f:
+        for val in invcov[pix_row]:
+            print(val, file=f)
+    return -1
     cov = pts2cov(pts, kern, sparse=False)
-    check_mat = numpy.dot(invcov, cov)
-    scipy.misc.imsave('invcov.png', invcov)
     scipy.misc.imsave('cov.png', cov)
+    check_mat = numpy.dot(invcov, cov)
     scipy.misc.imsave('check.png', check_mat)
-    row2fig('covrow.png', cov[37], nest=NEST)
-    row2fig('invcovrow.png', invcov[37], nest=NEST)
+    row2fig('covrow.png', cov[pix_row], nest=NEST)
+    row2fig('checkrow.png', check_mat[pix_row], nest=NEST)
 
 def run_checks():
     scipy.misc.imsave('cov.png', cov)
