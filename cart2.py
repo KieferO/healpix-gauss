@@ -31,15 +31,16 @@ def make_toroidal_metric(shape, l=2, manhattan=False):
         np.ndarray
             The squared distance between each pair of points in `x` and `y`.
         """
-        try:
-            assert x.shape[0] == n_dim
-        except:
-            raise ValueError('`x` must have shape (# of dimensions, # of points).')
+        if x.shape[0] != n_dim:
+            msg = '{} != {}: '
+            msg.format(x.shape[0], n_dim)
+            msg += '`x` must have shape (# of dimensions, # of points).'
+            raise ValueError(msg)
 
-        try:
-            assert x.shape == y.shape
-        except:
-            raise ValueError('Shapes of `x` and `y` must match.')
+        if x.shape != y.shape:
+            msg = '{} != {}: '.format(x.shape, y.shape)
+            msg += 'Shapes of `x` and `y` must match.'
+            raise ValueError(msg)
 
         return f_reduce(
             np.abs(np.minimum(
@@ -92,12 +93,11 @@ class CartesianPatchIterator(object):
         """
         if self._current >= self._n_patches:
             raise StopIteration
-        else:
-            self._x0[:,:] = self._patch_centers[:,self._current][:,None]
-            center_dist = self._metric(self._points, self._x0)
-            self._current += 1
-            return ((center_dist <= self._r_core),
-                    (center_dist <= self._r_border))
+        self._x0[:,:] = self._patch_centers[:,self._current][:,None]
+        center_dist = self._metric(self._points, self._x0)
+        self._current += 1
+        return ((center_dist <= self._r_core),
+                (center_dist <= self._r_border))
 
 def invert_by_patches(points, metric, kernel, patch_iter):
     # n_patches = patch_centers.shape[1]
@@ -168,9 +168,7 @@ def main():
     kernel = make_exp_kernel(scale_length)
 
     grid = flattened_grid(shape)
-    x0 = np.empty(grid.shape)
-    x0[0,:] = 0.
-    x0[1,:] = 0.
+    x0 = np.zeros(grid.shape)
 
     dist = metric(grid, x0)
     dist.shape = shape

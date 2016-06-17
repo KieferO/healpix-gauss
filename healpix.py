@@ -22,42 +22,6 @@ import scipy.sparse
 
 import cProfile as profile
 
-def pix_circle(nside, ipix, radius, nest=False):
-    assert False
-    unvisited = set([ipix])
-    visited = set()
-    for _ in range(radius):
-        while unvisited:
-            ipix = unvisited.pop()
-            neighbours = set(get_all_neighbours(nside, ipix, phi=None,
-                                                nest=nest))
-            neighbours -= visited
-            neighbours.discard(-1)
-            visited |= neighbours
-            visited.add(ipix)
-        unvisited |= visited
-    return visited
-
-def draw_circles():
-    assert False
-    fig = plt.figure()
-    ax = fig.add_subplot(1,1,1)
-    nside = 64
-    npix = nside2npix(nside)
-    xmap = numpy.zeros(npix)
-    for i in range(16, 0, -1):
-        highlight = pix_circle(nside, 0, i, nest=False)
-        for h in highlight:
-            xmap[h] = i
-    img_x = healpy.visufunc.mollview(
-        xmap,
-        nest=False,
-        return_projected_map=True)
-    ax.imshow(img_x)
-    ax.axis('off')
-    fig.savefig('indicator.png')
-    return 0
-
 # Read in a list of points.  Remember their indicies.  You'll need them later.
 # Accept a distance kernel.  It should return the variance between two
 # points.
@@ -77,14 +41,99 @@ def cast_neighborsof(order, nest=False):
 def pointsof(order):
     return range(nside2npix(order2nside(order)))
 
-def cast_kernel(order, nest=False):
+def cast_dist(order, nest=False):
+    def our_pix2vec(ipix):
+        return pix2vec(order2nside(order), ipix, nest=nest)
+    def dist(pt1, pt2):
+        d = 1.0 - numpy.dot(our_pix2vec(pt1), our_pix2vec(pt2))
+        d *= math.pi
+        return d
+    return dist
+
+def cast_kernel(order, scale_len=1.0, nest=False):
     nside = order2nside(order)
+    our_dist = cast_dist(order, nest=nest)
     def kernel(pt1, pt2):
-        dist = 1.0 - numpy.dot(pix2vec(nside, pt1, nest=nest),
-                            pix2vec(nside, pt2, nest=nest))
-        dist *= math.pi
-        return math.exp(- (50 * dist) ** 2)
+        dist = our_dist(pt1, pt2)
+        return math.exp(- (dist / scale_len) ** 2)
     return kernel
+
+class AdjMatrixRow(object):
+    def __init__(self, adj_fun, point, points):
+        self.points = points
+        self.pt1 = point
+        self._adj_fun = adj_fun
+        self._col_idx = 0
+        self.shape = (1, len(points))
+
+    def adj(self, pt2):
+        return self._adj_fun(self.pt1, pt2)
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        if self._col_idx >= len(self.points):
+            raise StopIteration
+        outval = self.adj(self.points[self._col_idx])
+        self._col_idx += 1
+        return outval
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.adj(self.points[key])
+
+        return AdjMatrixRow(self._adj_fun, self.point, self.points[key])
+
+class AdjacencyMatrix(object):
+    def __init__(self, adj_fun, points_top, points_left=None):
+        self.points_top = points_top
+        self.points_left = points_top
+        if self.points_left:
+            self.points_left = self.points_left
+        self._adj_fun = adj_fun
+        self._row_idx = 0
+        self.shape = (len(self.points_left), len(self.points_top))
+
+    def adj(self, pt1, pt2):
+        return self._adj_fun(pt1, pt2)
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        if self._row_idx >= len(self.points_left):
+            raise StopIteration
+        outrow = AdjMatrixRow(
+            self._adj_fun,
+            self.points_left[self._row_idx],
+            self.points_top)
+        self._row_idx += 1
+        return outrow
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return AdjMatrixRow(
+                self._adj_fun,
+                self.points_left[key],
+                self.points_top)
+
+        if isinstance(key, tuple) and len(key) == 2:
+            row_key, col_key = key
+            if isinstance(row_key, int):
+                if isinstance(col_key, int):
+                    return self.adj(self.points_left[row_key],
+                                    self.points_top[col_key])
+                return self.AdjMatrixRow(
+                    self._adj_fun,
+                    self.points_left[row_key],
+                    self.points_top[col_key])
+            return AdjacencyMatrix(
+                adj_fun,
+                points_left[row_key],
+                points_top[col_key])
+
+        raise IndexError
 
 def circle(ipix, neighborsof, radius):
     unvisited = set([ipix])
@@ -208,11 +257,11 @@ def row2fig(filename, row, nest=False):
     ax.axis('off')
     fig.savefig(filename)
 
-def main():
+def inv_test():
     order = 4
     pts = pointsof(order)
     NEST = False
-    kern = cast_kernel(order, nest=NEST)
+    kern = cast_kernel(order, 0.02, nest=NEST)
     neighbor_func = cast_neighborsof(order, nest=NEST)
     invcov = pts2invcov(pts, kern, neighbor_func)
     invcov = numpy.array(invcov.todense())
@@ -237,7 +286,7 @@ def profilerun():
     order = 3
     pts = pointsof(order)
     NEST = False
-    kern = cast_kernel(order, nest=NEST)
+    kern = cast_kernel(order, 0.02, nest=NEST)
     neighbor_func = cast_neighborsof(order, nest=NEST)
     return pts2invcov(pts, kern, neighbor_func)
 
@@ -250,6 +299,18 @@ def run_checks():
     scipy.misc.imsave('slow_invcov.png', numpy.linalg.inv(cov))
     scipy.misc.imsave('invcov.png', invcov)
 
+def main():
+    order = 3
+    NEST=True
+    scale_len = 1 / 20.0
+    pts = pointsof(order)
+    kernfun = cast_kernel(order, scale_len, nest=NEST)
+    covmat = numpy.zeros((len(pts),) * 2)
+    _covmat = AdjacencyMatrix(kernfun, pts)
+    for i in range(len(pts)):
+        for j in range(len(pts)):
+            covmat[i, j] = _covmat[i, j]
+    scipy.misc.imsave('covmat_nest.png', covmat)
 
 if __name__ == '__main__':
-    sys.exit(prof())
+    sys.exit(main())
