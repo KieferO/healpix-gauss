@@ -2,142 +2,361 @@
 
 from __future__ import print_function
 
-import sys
+import numpy as np
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import colors
+
+from healpy.pixelfunc import *
+import healpy
+
 import math
-import time
 
-import numpy
-from numpy import linalg
+def row2fig(filename, row, nest=False):
+    fig = plt.figure()
+    ax = fig.add_subplot(1,1,1)
+    img_x = healpy.visufunc.mollview(
+        row,
+        nest=nest,
+        return_projected_map=True)
+    ax.imshow(img_x)
+    ax.axis('off')
+    fig.savefig(filename)
 
-import scipy
-import scipy.misc
+def make_toroidal_metric(shape, l=2, manhattan=False):
+    n_dim = len(shape)
+    shape = np.array(shape)
+    f_reduce = np.max if manhattan else np.sum
 
-def mat2d(size):
-    field = []
-    for x in range(size):
-        for y in range(size):
-            field.append((float(x), float(y)))
-    return numpy.reshape(field, (size, size, 2))
+    def metric(x, y):
+        """
+        Returns distance squared between two sets of points in a periodic
+        Cartesian space.
 
-def idx_iter(i_from, i_to, size):
-    i = i_from
-    while i % size != i_to % size:
-        yield i % size
-        i += 1
+        Parameters
+        ----------
+        x : np.ndarray
+            The first set of coordinates.
+            x.shape = (# of dimensions, # of points)
+        y : np.ndarray
+            The second set of coordinates.
+            y.shape = (# of dimensions, # of points)
 
-def field(row_from, row_to, col_from, col_to, size):
-    row_from %= size
-    row_to %= size
-    col_from %= size
-    col_to %= size
-    field = numpy.zeros(((row_to - row_from) % size,
-                         (col_to - col_from) % size, 2))
-    for j, y in enumerate(idx_iter(col_from, col_to, size)):
-        for i, x in enumerate(idx_iter(row_from, row_to, size)):
-            field[i][j] = ((float(x), float(y)))
-    return field
+        Returns
+        -------
+        np.ndarray
+            The squared distance between each pair of points in `x` and `y`.
+        """
+        if x.shape[0] != n_dim:
+            msg = '{} != {}: '
+            msg.format(x.shape[0], n_dim)
+            msg += '`x` must have shape (# of dimensions, # of points).'
+            raise ValueError(msg)
 
-def cartesian_dist(src, tgt):
-    src_x, src_y = src
-    tgt_x, tgt_y = tgt
-    dist = math.sqrt((src_x - tgt_x) ** 2 + (src_y - tgt_y) ** 2)
-    return math.exp(-dist)
+        if x.shape != y.shape:
+            msg = '{} != {}: '.format(x.shape, y.shape)
+            msg += 'Shapes of `x` and `y` must match.'
+            raise ValueError(msg)
 
-def toroidal_dist(lenfield):
-    def toroidal_inner(src, tgt):
-        src_x, src_y = src
-        tgt_x, tgt_y = tgt
-        dist = min((src_x - tgt_x) % lenfield, (tgt_x - src_x) % lenfield) ** 2.
-        dist += min((src_y - tgt_y) % lenfield, (tgt_y - src_y) % lenfield) ** 2.
-        # dist = ((src_x - tgt_x) % (lenfield / 1)) ** 2
-        # dist += ((src_y - tgt_y) % (lenfield / 1)) ** 2
-        return math.exp(-math.sqrt(dist))
-    return toroidal_inner
+        out_vec = f_reduce(
+            np.abs(np.minimum(
+                np.remainder(x-y, shape[:,None]),
+                np.remainder(y-x, shape[:,None])
+            ))**l,
+            axis=0
+        )**(1./l)
+        return out_vec
 
-def mat2cov(field, dist_metric):
-    covsz = field.shape[0] ** 2
-    cov = numpy.zeros((covsz, covsz))
-    for i in range(covsz):
-        src = field[i / field.shape[0]][i % field.shape[0]]
-        for j in range(covsz):
-            tgt = field[j / field.shape[0]][j % field.shape[0]]
-            cov[i][j] = dist_metric(src, tgt)
-    return cov
+    return metric
 
-def cov2row(cov, x, y):
-    SZ = int(math.sqrt(cov.shape[0]))
-    row = x + SZ * y
-    return cov[row].reshape((SZ, SZ))
+def make_healpix_metric(order, nest=False):
+    def metric(x, y):
+        '''
+        Returns the distance in radians between two healpix pixels.
 
-def get_margins(size, margin, s_i):
-    margin_sinister = margin
-    margin_dexter = margin
-    idx_from = s_i * size
-    idx_to = (s_i + 1) * size
-    idx_from -= margin_sinister
-    idx_to += margin_dexter
-    return (idx_from, idx_to, margin_sinister, margin_dexter)
+        Parameters
+        ----------
+        x : numpy.ndarray
+            The first set of coordinates.
+            x.shape = (# of points,)
+        y : numpy.ndarray
+            The second set of coordinates.
+            y.shape = (# of points,)
 
-def write_to_invcov(lenfield, size, margin, n_superblocks, out_invcov, offsets):
-    i_offset, j_offset = offsets
-    for s_i in range(n_superblocks):
-        rlmargins = get_margins(size, margin, s_i)
-        row_from, row_to, margin_left, margin_right = rlmargins
-        if i_offset:
-            row_from += size / 2
-            row_to += size / 2
-        for s_j in range(n_superblocks):
-            tbmargins = get_margins(size, margin, s_j)
-            col_from, col_to, margin_top, margin_bot = tbmargins
-            if j_offset:
-                col_from += size / 2
-                col_to += size / 2
-            sub_mat = field(row_from, row_to, col_from, col_to, lenfield)
-            cov = mat2cov(sub_mat, toroidal_dist(lenfield))
-            invcov = linalg.inv(cov)
-            for r_i in range(size):
-                for r_j in range(size):
-                    invcov_row = (margin_top + r_i) * (size + margin * 2)
-                    invcov_row += margin_left + r_j
-                    r_orig = (((size / 2) * i_offset + s_i * size + r_i) % lenfield,
-                              ((size / 2) * j_offset + s_j * size + r_j) % lenfield)
-                    out_row = r_orig[0] * lenfield + r_orig[1]
-                    for c_i in range(size):
-                        for c_j in range(size):
-                            invcov_col = (margin_top + c_i) * (size + margin * 2)
-                            invcov_col += margin_left + c_j
-                            val = invcov[invcov_row][invcov_col]
-                            c_orig = (((size / 2) * i_offset + s_i * size + c_i) % lenfield,
-                                      ((size / 2) * j_offset + s_j * size + c_j) % lenfield)
-                            out_col = c_orig[0] * lenfield + c_orig[1]
-                            out_invcov[out_row][out_col] = val
+        Returns
+        -------
+        numpy.ndarray
+            The squared distance between each pair of points in `x` and `y`.
+        '''
+        if hasattr(x, 'shape') or hasattr(y, 'shape'):
+            if x.shape != y.shape:
+                msg = '{} != {}: '.format(x.shape, y.shape)
+                msg += 'Shapes of `x` and `y` must match.'
+                raise ValueError(msg)
+        else:
+            if hasattr(x, '__getitem__'):
+                x = np.array(x)
+                y = np.array(y)
+            else:
+                x = np.array((x,))
+                y = np.array((y,))
 
-def quick_inv(field, size, margin):
-    out_invcov = numpy.zeros((len(field) ** 2,) * 2)
-    # Tile the field with rectangles size x size.
-    n_superblocks = (len(field) / size) + (1 if (len(field) % size) else 0)
-    for i_offset in range(2):
-        for j_offset in range(2):
-            offsets = (i_offset, j_offset)
-            write_to_invcov(len(field), size, margin, n_superblocks, out_invcov,
-                            offsets)
-    return out_invcov
+        shape = x.shape
+        x.shape = (x.size,)
+        y.shape = (y.size,)
+        nside = order2nside(order)
+        def our_pix2vec(ipix):
+            outvec = np.array(pix2vec(nside, ipix, nest=nest))
+            return outvec
+        d = 1.0 - np.einsum('ij,ij->j', our_pix2vec(x), our_pix2vec(y))
+        d *= math.pi
+        d.shape = shape
+        if d.shape == (1,):
+            d = d[0]
+        return d
+    return metric
+
+
+def flattened_grid(shape):
+    grid = np.indices(shape)
+    grid.shape = (grid.shape[0], np.prod(grid.shape[1:]))
+    return grid
+
+def dist_matrix(points, metric):
+    shape = points.shape
+    if len(shape) == 1:
+        shape = (1, shape[0])
+    idx = np.indices((shape[1], shape[1]))
+    idx.shape = (2, shape[1]**2)
+    dist = metric(points[...,idx[0]], points[...,idx[1]])
+    dist.shape = (shape[1], shape[1])
+    return dist
+
+def make_exp_kernel(scale_length):
+    def kernel(dist):
+        return np.exp(-dist/scale_length)
+    return kernel
+
+class CartesianPatchIterator(object):
+    def __init__(self, points, patch_centers, metric, r_core, r_border):
+        self._points = points
+        self._patch_centers = patch_centers
+        self._metric = metric
+        self._r_core = r_core
+        self._r_border = r_border
+
+        self._n_patches = patch_centers.shape[-1]
+        if len(points.shape) > 1:
+            self._n_dim, self._n_points = points.shape
+        else:
+            self._n_dim, self._n_points = (1,) + points.shape
+        self._x0 = np.empty((self._n_dim, self._n_points), dtype='f8')
+
+        self._current = 0
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        """
+        Return a boolean array identifying the core of the next patch,
+        and a second boolean array identifying the core+border.
+        """
+        if self._current >= self._n_patches:
+            raise StopIteration
+        self._x0[:,:] = self._patch_centers[:,self._current][:,None]
+        center_dist = self._metric(self._points, self._x0)
+        self._current += 1
+        return ((center_dist <= self._r_core),
+                (center_dist <= self._r_border))
+
+class HealpixPatchIterator(object):
+    def __init__(self, points, patch_centers, metric, r_core, r_border):
+        self._points = points
+        self._patch_centers = patch_centers
+        self._metric = metric
+        self._r_core = r_core
+        self._r_border = r_border
+
+        self._n_patches = patch_centers.shape[-1]
+        self._n_points = points.shape[-1]
+        self._x0 = np.zeros((self._n_points,), dtype=int)
+
+        self._current = 0
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        """
+        Return a boolean array identifying the core of the next patch,
+        and a second boolean array identifying the core+border.
+        """
+        if self._current >= self._n_patches:
+            raise StopIteration
+        self._x0 = np.ones(self._n_points, dtype=int) * self._patch_centers[self._current]
+        center_dist = self._metric(self._points, self._x0)
+        self._current += 1
+        return ((center_dist <= self._r_core),
+                (center_dist <= self._r_border))
+
+def invert_by_patches(points, metric, kernel, patch_iter):
+    # n_patches = patch_centers.shape[1]
+    # n_points = points.shape[1]
+
+    # Determine distance of every point to every patch center
+    # patch_dist = np.empty((n_patches, n_points), dtype='f8')
+    # x0 = np.empty(points.shape)
+    #
+    # for k in range(n_patches):
+    #     x0[:,:] = patch_centers[:,k][:,None]
+    #     patch_dist[k,:] = metric(x0, points)
+    #
+    # # Find nearest patch for each point
+    # nearest_patch_idx = np.argmin(patch_dist, axis=0)
+
+    # for patch_idx in range(n_patches):
+    #     point_idx = (nearest_patch_idx == patch_idx)
+    #     cov = kernel(dist_matrix(points[:,point_idx], metric))
+    #     inv_cov = np.linalg.inv(cov)
+
+    nearest_patch_idx = np.zeros(points.shape[-1], dtype='f8')
+
+    n_points = points.shape[-1]
+    inv_cov_full = np.zeros((n_points, n_points), dtype='f8')
+
+    for k, (idx_core, idx_border) in enumerate(patch_iter):
+        cov_border = kernel(dist_matrix(points[...,idx_border], metric))
+        inv_cov_border = np.linalg.inv(cov_border)
+        # print(inv_cov_border[:4,:4])
+
+        # Extract the inverse covariance for the core
+        idx_core_in_border = idx_core[idx_border]
+        inv_cov_core = inv_cov_border[idx_core_in_border,:][:,idx_core_in_border]
+        # print(inv_cov_core)
+
+        core_rows = np.where(idx_core)[0]
+        # print(core_rows)
+        core_rows, core_cols = np.meshgrid(core_rows, core_rows)
+        # print(core_rows.shape, core_cols.shape, inv_cov_core.shape)
+
+        core_rows.shape = (core_rows.size,)
+        core_cols.shape = (core_cols.size,)
+        # inv_cov_core.shape = (inv_cov_core.size,)
+
+        # print(inv_cov_core[:4,:4])
+        # print(core_rows)
+        # print(core_cols)
+        inv_cov_full[core_rows,core_cols] = inv_cov_core.flat
+
+        nearest_patch_idx[idx_border] += 1.
+
+    return inv_cov_full, nearest_patch_idx
+
+def get_patch_centers(order):
+    s_order = order - 2
+    c0s = np.array(range(nside2npix(order2nside(s_order))))
+    return vec2pix(order2nside(order), *pix2vec(order2nside(s_order), c0s))
 
 def main():
-    SZ = 32
-    field = mat2d(SZ)
-    cov = mat2cov(field, toroidal_dist(SZ))
-    scipy.misc.imsave('cov.png', cov)
-    invcov = quick_inv(field, 8, 0)
-    slow_invcov = numpy.linalg.inv(cov)
-    scipy.misc.imsave('invcov.png', invcov)
-    scipy.misc.imsave('slow-invcov.png', slow_invcov)
-    check = numpy.dot(cov, invcov)
-    scipy.misc.imsave('check.png', check)
-    for i in range(SZ * SZ):
-        check[i][i] = 0
-    print(numpy.max(check), numpy.min(check))
+    from time import time
+
+    order = 4
+    npix = nside2npix(order2nside(order))
+    #npix = 32
+    shape = np.array([npix, npix])
+    #patch_centers = 8. * flattened_grid((4,4))
+    patch_centers = get_patch_centers(order)
+    #r_core = 4.01
+    #r_border = 6.01
+    r_core = 0.8
+    r_border = 1.1
+    scale_length = 1 / 60.0
+
+    n_dim = len(shape)
+
+    #metric = make_toroidal_metric(shape)
+    metric = make_healpix_metric(order)
+    kernel = make_exp_kernel(scale_length)
+
+    #grid = flattened_grid(shape)
+    grid = np.array(range(npix))
+    #x0 = np.zeros(grid.shape, dtype=int)
+    x0 = np.ones(npix, dtype=int) * 365
+
+    dist = metric(grid, x0)
+    #dist.shape = shape
+
+    dist_mat = dist_matrix(grid, metric)
+
+    t0 = time()
+
+    cov = kernel(dist_mat)
+    inv_cov = np.linalg.inv(cov)
+
+    t1 = time()
+    print('Time to invert directly:   {:.4f} s'.format(t1-t0))
+
+    #patch_metric = make_toroidal_metric(shape, manhattan=True, l=1)
+    patch_metric = metric
+    #patch_iter = CartesianPatchIterator(
+    patch_iter = HealpixPatchIterator(
+        grid,
+        patch_centers,
+        patch_metric,
+        r_core,
+        r_border
+    )
+    inv_cov_est, patch_identity = invert_by_patches(
+        grid,
+        metric,
+        kernel,
+        patch_iter
+    )
+    #patch_identity.shape = shape
+
+    t2 = time()
+    print('Time to invert by patches: {:.4f} s'.format(t2-t1))
+    I = np.dot(inv_cov, cov)
+    I_est = np.dot(inv_cov_est, cov)
+
+    t3 = time()
+    print('Time to calculate checks:  {:.4f} s'.format(t3-t2))
+
+    I_diag = I[np.diag_indices(I.shape[0])]
+    I_diag_dev = np.max(np.abs(I_diag-1.))
+    I[np.diag_indices(I.shape[0])] = 0.
+    I_off_diag_dev = np.max(np.abs(I))
+
+    print('C^-1 C:')
+    print('  * max. abs. dev. along diagonal: {:.3g}'.format(I_diag_dev))
+    print('  * max. abs. dev. off diagonal:   {:.3g}'.format(I_off_diag_dev))
+
+    I_diag = I_est[np.diag_indices(I_est.shape[0])]
+    I_diag_dev = np.max(np.abs(I_diag-1.))
+    I_est[np.diag_indices(I_est.shape[0])] = 0.
+    I_off_diag_dev = np.max(np.abs(I_est))
+
+    print('(C^-1)_{est} C:')
+    print('  * max. abs. dev. along diagonal: {:.3g}'.format(I_diag_dev))
+    print('  * max. abs. dev. off diagonal:   {:.3g}'.format(I_off_diag_dev))
+
+    #plt.imsave('dist.png', dist, cmap=colors.inferno_r)
+    row2fig('dist.png', dist)
+    plt.imsave('dist_matrix.png', dist_mat, cmap=colors.inferno_r)
+    plt.imsave('cov.png', cov, cmap=colors.inferno_r)
+    vmax = np.max(np.abs(inv_cov))
+    plt.imsave('inv_cov.png', inv_cov, cmap='coolwarm_r', vmin=-vmax, vmax=vmax)
+    vmax = np.max(np.abs(inv_cov_est))
+    plt.imsave('inv_cov_est.png', inv_cov_est, cmap='coolwarm_r', vmin=-vmax, vmax=vmax)
+    #plt.imsave('patches.png', patch_identity, cmap=colors.inferno_r)
+    row2fig('patches.png', patch_identity)
+    print(np.min(patch_identity))
+    print(np.max(patch_identity))
+
     return 0
 
 if __name__ == '__main__':
-    sys.exit(main())
+    main()

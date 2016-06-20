@@ -52,88 +52,10 @@ def cast_dist(order, nest=False):
 
 def cast_kernel(order, scale_len=1.0, nest=False):
     nside = order2nside(order)
-    our_dist = cast_dist(order, nest=nest)
-    def kernel(pt1, pt2):
+    def kernel(dist):
         dist = our_dist(pt1, pt2)
         return math.exp(- (dist / scale_len) ** 2)
     return kernel
-
-class AdjMatrixRow(object):
-    def __init__(self, adj_fun, point, points):
-        self.points = points
-        self.pt1 = point
-        self._adj_fun = adj_fun
-        self._col_idx = 0
-        self.shape = (1, len(points))
-
-    def adj(self, pt2):
-        return self._adj_fun(self.pt1, pt2)
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        if self._col_idx >= len(self.points):
-            raise StopIteration
-        outval = self.adj(self.points[self._col_idx])
-        self._col_idx += 1
-        return outval
-
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return self.adj(self.points[key])
-
-        return AdjMatrixRow(self._adj_fun, self.point, self.points[key])
-
-class AdjacencyMatrix(object):
-    def __init__(self, adj_fun, points_top, points_left=None):
-        self.points_top = points_top
-        self.points_left = points_top
-        if self.points_left:
-            self.points_left = self.points_left
-        self._adj_fun = adj_fun
-        self._row_idx = 0
-        self.shape = (len(self.points_left), len(self.points_top))
-
-    def adj(self, pt1, pt2):
-        return self._adj_fun(pt1, pt2)
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        if self._row_idx >= len(self.points_left):
-            raise StopIteration
-        outrow = AdjMatrixRow(
-            self._adj_fun,
-            self.points_left[self._row_idx],
-            self.points_top)
-        self._row_idx += 1
-        return outrow
-
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return AdjMatrixRow(
-                self._adj_fun,
-                self.points_left[key],
-                self.points_top)
-
-        if isinstance(key, tuple) and len(key) == 2:
-            row_key, col_key = key
-            if isinstance(row_key, int):
-                if isinstance(col_key, int):
-                    return self.adj(self.points_left[row_key],
-                                    self.points_top[col_key])
-                return self.AdjMatrixRow(
-                    self._adj_fun,
-                    self.points_left[row_key],
-                    self.points_top[col_key])
-            return AdjacencyMatrix(
-                adj_fun,
-                points_left[row_key],
-                points_top[col_key])
-
-        raise IndexError
 
 def circle(ipix, neighborsof, radius):
     unvisited = set([ipix])
@@ -148,7 +70,7 @@ def circle(ipix, neighborsof, radius):
         unvisited |= visited
     return visited
 
-def scale_radius_trial(points, kernel, neighborsof, tol):
+def scale_radius_trial(points, dist, kernel, neighborsof, tol):
     i = 0
     center = random.sample(points, 1)[0]
     far = center
@@ -157,7 +79,7 @@ def scale_radius_trial(points, kernel, neighborsof, tol):
         m_val = 100
         m_nei = None
         for n in neighborsof(far):
-            val = kernel(center, n)
+            val = kernel(dist(center, n))
             if val < m_val:
                 m_val = val
                 m_nei = n
@@ -170,14 +92,14 @@ def find_scale_radius(*args):
     return int(sum([ scale_radius_trial(*args) for _ in range(trials) ]) /
                float(trials))
 
-def pts2cov(points, kernel, sparse=True):
+def pts2cov(points, dist, kernel, sparse=True):
     if sparse:
         cov = scipy.sparse.dok_matrix((len(points),) * 2, numpy.float64)
     else:
         cov = numpy.zeros((len(points),) * 2)
     for i, pt1 in enumerate(points):
         for j, pt2 in enumerate(points[i:]):
-            variance = kernel(pt1, pt2)
+            variance = kernel(dist(pt1, pt2))
             if abs(variance) > 1e-6:
                 cov[i, i + j] = variance
                 cov[j + i, i] = variance
@@ -186,14 +108,14 @@ def pts2cov(points, kernel, sparse=True):
         cov = cov.tocsc()
     return cov
 
-def pts2invcov(points, kernel, neighborsof):
+def pts2invcov(points, dist, kernel, neighborsof):
     points = set(points)
     size = len(points)
     global_invcov = scipy.sparse.dok_matrix((size, size), numpy.float64)
     #global_invcov = dict()
     hotspot_r = 16
-    margin_r = find_scale_radius(points, kernel, neighborsof, 1e-6)
-    gutter_r = find_scale_radius(points, kernel, neighborsof, 1e-12)
+    margin_r = find_scale_radius(points, dist, kernel, neighborsof, 1e-6)
+    gutter_r = find_scale_radius(points, dist, kernel, neighborsof, 1e-12)
     while points:
         center = 138 #random.sample(points, 1)[0]
         region = circle(center, neighborsof, hotspot_r + gutter_r)
@@ -206,7 +128,7 @@ def pts2invcov(points, kernel, neighborsof):
         points -= hotspot
         region = list(region)
         region.sort()
-        cov = pts2cov(region, kernel, sparse=False)
+        cov = pts2cov(region, dist, kernel, sparse=False)
         local_invcov = numpy.linalg.inv(cov)
         scipy.misc.imsave('local_invcov.png', local_invcov)
         scipy.misc.imsave('local_cov.png', cov)
@@ -261,9 +183,10 @@ def inv_test():
     order = 4
     pts = pointsof(order)
     NEST = False
+    dist = cast_distance(order, nest=NEST)
     kern = cast_kernel(order, 0.02, nest=NEST)
     neighbor_func = cast_neighborsof(order, nest=NEST)
-    invcov = pts2invcov(pts, kern, neighbor_func)
+    invcov = pts2invcov(pts, dist, kern, neighbor_func)
     invcov = numpy.array(invcov.todense())
     pix_row = vec2pix(order2nside(order),
                       0.22203510307746671,
@@ -275,42 +198,29 @@ def inv_test():
         for val in invcov[pix_row]:
             print(val, file=f)
     return -1
-    cov = pts2cov(pts, kern, sparse=False)
+    cov = pts2cov(pts, dist, kern, sparse=False)
     scipy.misc.imsave('cov.png', cov)
     check_mat = numpy.dot(invcov, cov)
     scipy.misc.imsave('check.png', check_mat)
     row2fig('covrow.png', cov[pix_row], nest=NEST)
     row2fig('checkrow.png', check_mat[pix_row], nest=NEST)
 
-def profilerun():
-    order = 3
-    pts = pointsof(order)
-    NEST = False
-    kern = cast_kernel(order, 0.02, nest=NEST)
-    neighbor_func = cast_neighborsof(order, nest=NEST)
-    return pts2invcov(pts, kern, neighbor_func)
+class HealPixPatchIterator(object):
+    def __init__(self, points, patch_centers, metric, r_core, r_border):
+        self._points = points
+        self._patch_centers = patch_centers
+        self._metric = metric
+        self._r_core = r_core
+        self._r_border = r_border
 
-def prof():
-    profile.run('profilerun()')
+        self._n_patches = patch_centers.shape[1]
+        self._n_dim, self._n_points = points.shape
+        self._x0 = np.empty((self._n_dim, self._n_points), dtype='f8')
 
-def run_checks():
-    scipy.misc.imsave('cov.png', cov)
-    scipy.misc.imsave('check.png', check_mat)
-    scipy.misc.imsave('slow_invcov.png', numpy.linalg.inv(cov))
-    scipy.misc.imsave('invcov.png', invcov)
+        self._current = 0
 
 def main():
-    order = 3
-    NEST=True
-    scale_len = 1 / 20.0
-    pts = pointsof(order)
-    kernfun = cast_kernel(order, scale_len, nest=NEST)
-    covmat = numpy.zeros((len(pts),) * 2)
-    _covmat = AdjacencyMatrix(kernfun, pts)
-    for i in range(len(pts)):
-        for j in range(len(pts)):
-            covmat[i, j] = _covmat[i, j]
-    scipy.misc.imsave('covmat_nest.png', covmat)
+    return 0
 
 if __name__ == '__main__':
     sys.exit(main())
