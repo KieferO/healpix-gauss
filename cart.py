@@ -13,6 +13,7 @@ from healpy.pixelfunc import *
 import healpy
 
 import math
+import random
 
 def row2fig(filename, row, nest=False):
     fig = plt.figure()
@@ -272,76 +273,84 @@ def main():
     #r_core = 4.01
     #r_border = 6.01
     r_core = 0.8
-    r_border = 1.1
-    scale_length = 1 / 60.0
+    r_border = 1.8
 
     n_dim = len(shape)
 
     #metric = make_toroidal_metric(shape)
     metric = make_healpix_metric(order)
-    kernel = make_exp_kernel(scale_length)
+    for inv_scale_length in range(1, 100):
+        scale_length = 1.0 / inv_scale_length
+        with open('scale_variation.txt', 'a') as logf:
+            kernel = make_exp_kernel(scale_length)
 
-    #grid = flattened_grid(shape)
-    grid = np.array(range(npix))
-    #x0 = np.zeros(grid.shape, dtype=int)
-    x0 = np.ones(npix, dtype=int) * 365
+            #grid = flattened_grid(shape)
+            grid = np.array(range(npix))
+            #x0 = np.zeros(grid.shape, dtype=int)
+            x0 = np.ones(npix, dtype=int) * 365
 
-    dist = metric(grid, x0)
-    #dist.shape = shape
+            dist = metric(grid, x0)
+            #dist.shape = shape
 
-    dist_mat = dist_matrix(grid, metric)
+            dist_mat = dist_matrix(grid, metric)
 
-    t0 = time()
+            t0 = time()
 
-    cov = kernel(dist_mat)
-    inv_cov = np.linalg.inv(cov)
+            cov = kernel(dist_mat)
+            inv_cov = np.linalg.inv(cov)
 
-    t1 = time()
-    print('Time to invert directly:   {:.4f} s'.format(t1-t0))
+            t1 = time()
+            header = '=== inv_scale_length:{:.1f}: ==='
+            header = header.format(inv_scale_length)
+            print(header, file=logf)
+            print('Time to invert directly:   {:.4f} s'.format(t1-t0), file=logf)
 
-    #patch_metric = make_toroidal_metric(shape, manhattan=True, l=1)
-    patch_metric = metric
-    #patch_iter = CartesianPatchIterator(
-    patch_iter = HealpixPatchIterator(
-        grid,
-        patch_centers,
-        patch_metric,
-        r_core,
-        r_border
-    )
-    inv_cov_est, patch_identity = invert_by_patches(
-        grid,
-        metric,
-        kernel,
-        patch_iter
-    )
-    #patch_identity.shape = shape
+            #patch_metric = make_toroidal_metric(shape, manhattan=True, l=1)
+            patch_metric = metric
+            #patch_iter = CartesianPatchIterator(
+            r_core = random.uniform(0.3, 1.0)
+            r_border = random.uniform(r_core, 2.8)
+            t1 = time()
+            patch_iter = HealpixPatchIterator(
+                grid,
+                patch_centers,
+                patch_metric,
+                r_core,
+                r_border
+            )
+            inv_cov_est, patch_identity = invert_by_patches(
+                grid,
+                metric,
+                kernel,
+                patch_iter
+            )
+            #patch_identity.shape = shape
 
-    t2 = time()
-    print('Time to invert by patches: {:.4f} s'.format(t2-t1))
-    I = np.dot(inv_cov, cov)
-    I_est = np.dot(inv_cov_est, cov)
+            t2 = time()
+            print('Time to invert by patches: {:.4f} s'.format(t2-t1), file=logf)
+            I = np.dot(inv_cov, cov)
+            I_est = np.dot(inv_cov_est, cov)
 
-    t3 = time()
-    print('Time to calculate checks:  {:.4f} s'.format(t3-t2))
+            t3 = time()
+            print('Time to calculate checks:  {:.4f} s'.format(t3-t2), file=logf)
 
-    I_diag = I[np.diag_indices(I.shape[0])]
-    I_diag_dev = np.max(np.abs(I_diag-1.))
-    I[np.diag_indices(I.shape[0])] = 0.
-    I_off_diag_dev = np.max(np.abs(I))
+            I_diag = I[np.diag_indices(I.shape[0])]
+            I_diag_dev = np.max(np.abs(I_diag-1.))
+            I[np.diag_indices(I.shape[0])] = 0.
+            I_off_diag_dev = np.max(np.abs(I))
 
-    print('C^-1 C:')
-    print('  * max. abs. dev. along diagonal: {:.3g}'.format(I_diag_dev))
-    print('  * max. abs. dev. off diagonal:   {:.3g}'.format(I_off_diag_dev))
+            print('C^-1 C:', file=logf)
+            print('  * max. abs. dev. along diagonal: {:.3g}'.format(I_diag_dev), file=logf)
+            print('  * max. abs. dev. off diagonal: {:.3g}'.format(I_off_diag_dev), file=logf)
 
-    I_diag = I_est[np.diag_indices(I_est.shape[0])]
-    I_diag_dev = np.max(np.abs(I_diag-1.))
-    I_est[np.diag_indices(I_est.shape[0])] = 0.
-    I_off_diag_dev = np.max(np.abs(I_est))
+            I_diag = I_est[np.diag_indices(I_est.shape[0])]
+            I_diag_dev = np.max(np.abs(I_diag-1.))
+            I_est[np.diag_indices(I_est.shape[0])] = 0.
+            I_off_diag_dev = np.max(np.abs(I_est))
 
-    print('(C^-1)_{est} C:')
-    print('  * max. abs. dev. along diagonal: {:.3g}'.format(I_diag_dev))
-    print('  * max. abs. dev. off diagonal:   {:.3g}'.format(I_off_diag_dev))
+            print('(C^-1)_{est} C:', file=logf)
+            print('  * max. abs. dev. along diagonal: {:.3g}'.format(I_diag_dev), file=logf)
+            print('  * max. abs. dev. off diagonal: {:.3g}'.format(I_off_diag_dev), file=logf)
 
     #plt.imsave('dist.png', dist, cmap=colors.inferno_r)
     row2fig('dist.png', dist)
@@ -351,10 +360,15 @@ def main():
     plt.imsave('inv_cov.png', inv_cov, cmap='coolwarm_r', vmin=-vmax, vmax=vmax)
     vmax = np.max(np.abs(inv_cov_est))
     plt.imsave('inv_cov_est.png', inv_cov_est, cmap='coolwarm_r', vmin=-vmax, vmax=vmax)
+    row2fig('inv_cov_est_row.png', inv_cov_est[1387])
+    with open('inv_cov_est_diag.txt', 'w') as icer:
+        for i in range(npix):
+            print(np.max(inv_cov_est[i]), file=icer)
+    with open('inv_cov_diag.txt', 'w') as icer:
+        for i in range(npix):
+            print(np.max(inv_cov[i]), file=icer)
     #plt.imsave('patches.png', patch_identity, cmap=colors.inferno_r)
     row2fig('patches.png', patch_identity)
-    print(np.min(patch_identity))
-    print(np.max(patch_identity))
 
     return 0
 
